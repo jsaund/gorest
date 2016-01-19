@@ -114,6 +114,7 @@ type {{ .RequestType }}Impl struct {
 	baseUrl     string
 	pathSubstitutions map[string]string
 	queryParams url.Values
+	postFormParams url.Values
 }
 
 func New{{ .RequestType }}(baseUrl string) {{ .RequestType }} {
@@ -121,6 +122,7 @@ func New{{ .RequestType }}(baseUrl string) {{ .RequestType }} {
 		baseUrl: baseUrl,
 		pathSubstitutions: make(map[string]string),
 		queryParams: url.Values{},
+		postFormParams: url.Values{},
 	}
 }
 
@@ -134,6 +136,13 @@ func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.
 {{ range $key, $value := .QueryParams }}
 func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
 	b.queryParams.Add("{{ $value | ParamKey }}", {{ ParamName $value.Type true 0 }})
+	return b
+}
+{{ end }}
+
+{{ range $key, $value := .PostFormParams }}
+func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
+	b.postFormParams.Add("{{ $value | ParamKey }}", {{ ParamName $value.Type true 0 }})
 	return b
 }
 {{ end }}
@@ -157,6 +166,9 @@ func (b *{{ .RequestType }}Impl) build() (*http.Request, error) {
 	}
 	if len(b.queryParams) > 0 {
 		req.URL.RawQuery = b.queryParams.Encode()
+	}
+	if len(b.postFormParams) > 0 {
+		req.URL.RawQuery = b.postFormParams.Encode()
 	}
 	req.Header.Set("Accept", "application/json")
 	return req, nil
@@ -241,12 +253,17 @@ func getParamKey(f *ast.Field) string {
 		return queryKey
 	}
 
+	fieldKey := extractPostFormParam(re, comment)
+	if fieldKey != "" {
+		return fieldKey
+	}
+
 	pathKey := extractPathParam(re, comment)
 	if pathKey != "" {
 		return pathKey
 	}
 
-	log.Fatalf("Must have query or path parameter defined.")
+	log.Fatalf("Must have query or path or field parameter defined.")
 	return ""
 }
 
@@ -302,16 +319,17 @@ func getParamType(e ast.Expr) string {
 }
 
 const (
-	sync             string = "SYNC"
-	async            string = "ASYNC"
-	path             string = "PATH"
-	query            string = "QUERY"
-	body             string = "BODY"
-	httpMethodGet    string = "GET"
-	httpMethodPost   string = "POST"
-	httpMethodPut    string = "PUT"
-	httpMethodDelete string = "DELETE"
-	httpMethodHead   string = "HEAD"
+	sync               string = "SYNC"
+	async              string = "ASYNC"
+	path               string = "PATH"
+	query              string = "QUERY"
+	field              string = "FIELD"
+	httpMethodGet      string = "GET"
+	httpMethodPost     string = "POST"
+	httpMethodPostForm string = "POST_FORM"
+	httpMethodPut      string = "PUT"
+	httpMethodDelete   string = "DELETE"
+	httpMethodHead     string = "HEAD"
 
 	pattern string = `@(\w+)\(\"(.*)\"\)`
 )
@@ -323,6 +341,7 @@ type generateInfo struct {
 	HttpMethod        string
 	PathSubstitutions map[string]*ast.Field
 	QueryParams       map[string]*ast.Field
+	PostFormParams    map[string]*ast.Field
 	SyncResponse      *ast.Field
 	AsyncResponse     *ast.Field
 	CallbackType      string
@@ -343,6 +362,7 @@ func newVisitor(info *types.Info, pkg string) *astVisitor {
 			Pkg:               pkg,
 			PathSubstitutions: make(map[string]*ast.Field),
 			QueryParams:       make(map[string]*ast.Field),
+			PostFormParams:    make(map[string]*ast.Field),
 		},
 		re: regexp.MustCompile(pattern),
 	}
@@ -388,6 +408,8 @@ func (v *astVisitor) Visit(node ast.Node) ast.Visitor {
 		for _, f := range methods.List {
 			if qp := extractQueryParam(v.re, f.Doc.List[0].Text); qp != "" {
 				v.generateInfo.QueryParams[f.Names[0].Name] = f
+			} else if pfp := extractPostFormParam(v.re, f.Doc.List[0].Text); pfp != "" {
+				v.generateInfo.PostFormParams[f.Names[0].Name] = f
 			} else if pp := extractPathParam(v.re, f.Doc.List[0].Text); pp != "" {
 				v.generateInfo.PathSubstitutions[f.Names[0].Name] = f
 			} else if asyncTag := extractAsyncTag(v.re, f.Doc.List[0].Text); asyncTag != "" {
@@ -432,7 +454,12 @@ func extractAsyncTag(re *regexp.Regexp, s string) string {
 func extractHttpMethodTag(re *regexp.Regexp, s string) (string, string) {
 	match := re.FindStringSubmatch(s)
 	if len(match) == 3 && isAnnotationHttpMethod(match[1]) {
-		return match[1], match[2]
+		method := match[1]
+		api := match[2]
+		if method == httpMethodPostForm {
+			method = httpMethodPost
+		}
+		return method, api
 	}
 	return "", ""
 }
@@ -446,12 +473,20 @@ func isAnnotationSync(s string) bool {
 }
 
 func isAnnotationHttpMethod(s string) bool {
-	return s == httpMethodGet || s == httpMethodPost || s == httpMethodPut || s == httpMethodHead || s == httpMethodDelete
+	return s == httpMethodGet || s == httpMethodPost || s == httpMethodPostForm || s == httpMethodPut || s == httpMethodHead || s == httpMethodDelete
 }
 
 func extractQueryParam(re *regexp.Regexp, s string) string {
 	match := re.FindStringSubmatch(s)
 	if len(match) == 3 && match[1] == query {
+		return match[2]
+	}
+	return ""
+}
+
+func extractPostFormParam(re *regexp.Regexp, s string) string {
+	match := re.FindStringSubmatch(s)
+	if len(match) == 3 && match[1] == field {
 		return match[2]
 	}
 	return ""

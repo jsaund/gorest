@@ -72,7 +72,7 @@ func main() {
 		log.Fatalf("Failed to write generated source to file %s. Reason: %s", *output, err)
 	}
 
-	fmt.Println("Generated source written to file %s", *output)
+	fmt.Println("Generated source written to file " + *output)
 }
 
 func generate(file *ast.File, pkg string) ([]byte, error) {
@@ -90,7 +90,7 @@ func generate(file *ast.File, pkg string) ([]byte, error) {
 
 func generateRequestResponse(r *generateInfo) ([]byte, error) {
 	var builderTemplate = template.Must(template.New("builder").Funcs(funcMap).Parse(`/*
-* CODE GENERATED AUTOMATICALLY WITH Go500px
+* CODE GENERATED AUTOMATICALLY WITH GOREST (github.com/jsaund/gorest)
 * THIS FILE SHOULD NOT BE EDITED BY HAND
 */
 
@@ -99,6 +99,7 @@ package {{.Pkg}}
 import (
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 {{ if .CallbackType }}
@@ -111,15 +112,24 @@ type {{ $.CallbackType }} interface {
 
 type {{ .RequestType }}Impl struct {
 	baseUrl     string
+	pathSubstitutions map[string]string
 	queryParams url.Values
 }
 
 func New{{ .RequestType }}(baseUrl string) {{ .RequestType }} {
 	return &{{ .RequestType }}Impl{
 		baseUrl: baseUrl,
+		pathSubstitutions: make(map[string]string),
 		queryParams: url.Values{},
 	}
 }
+
+{{ range $key, $value := .PathSubstitutions }}
+func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
+	b.pathSubstitutions["{{ ParamKey $value }}"] = {{ ParamName $value.Type true 0 }}
+	return b
+}
+{{ end }}
 
 {{ range $key, $value := .QueryParams }}
 func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
@@ -128,8 +138,20 @@ func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.
 }
 {{ end }}
 
+func (b *{{ .RequestType }}Impl) applyPathSubstituions(api string) string {
+	if len(b.pathSubstitutions) == 0 {
+		return api
+	}
+
+	for key, value := range b.pathSubstitutions {
+		api = strings.Replace(api, "{" + key + "}", value, -1)
+	}
+
+	return api
+}
+
 func (b *{{ .RequestType }}Impl) build() (*http.Request, error) {
-	req, err := http.NewRequest("{{ .HttpMethod }}", b.baseUrl + "{{ .ApiEndpoint }}", nil)
+	req, err := http.NewRequest("{{ .HttpMethod }}", b.baseUrl + b.applyPathSubstituions("{{ .ApiEndpoint }}"), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -214,11 +236,18 @@ func getMethodName(f *ast.Field) string {
 func getParamKey(f *ast.Field) string {
 	re := regexp.MustCompile(pattern)
 	comment := f.Doc.Text()
-	key := extractQueryParam(re, comment)
-	if key == "" {
-		log.Fatalf("Must have query parameter defined.")
+	queryKey := extractQueryParam(re, comment)
+	if queryKey != "" {
+		return queryKey
 	}
-	return key
+
+	pathKey := extractPathParam(re, comment)
+	if pathKey != "" {
+		return pathKey
+	}
+
+	log.Fatalf("Must have query or path parameter defined.")
+	return ""
 }
 
 func getParamName(e ast.Expr, forceString bool, index int) string {
@@ -275,6 +304,7 @@ func getParamType(e ast.Expr) string {
 const (
 	sync             string = "SYNC"
 	async            string = "ASYNC"
+	path             string = "PATH"
 	query            string = "QUERY"
 	body             string = "BODY"
 	httpMethodGet    string = "GET"
@@ -287,15 +317,16 @@ const (
 )
 
 type generateInfo struct {
-	Pkg           string
-	RequestType   string
-	ApiEndpoint   string
-	HttpMethod    string
-	QueryParams   map[string]*ast.Field
-	SyncResponse  *ast.Field
-	AsyncResponse *ast.Field
-	CallbackType  string
-	ResponseType  string
+	Pkg               string
+	RequestType       string
+	ApiEndpoint       string
+	HttpMethod        string
+	PathSubstitutions map[string]*ast.Field
+	QueryParams       map[string]*ast.Field
+	SyncResponse      *ast.Field
+	AsyncResponse     *ast.Field
+	CallbackType      string
+	ResponseType      string
 }
 
 type astVisitor struct {
@@ -309,8 +340,9 @@ func newVisitor(info *types.Info, pkg string) *astVisitor {
 	return &astVisitor{
 		info: info,
 		generateInfo: &generateInfo{
-			Pkg:         pkg,
-			QueryParams: make(map[string]*ast.Field),
+			Pkg:               pkg,
+			PathSubstitutions: make(map[string]*ast.Field),
+			QueryParams:       make(map[string]*ast.Field),
 		},
 		re: regexp.MustCompile(pattern),
 	}
@@ -356,6 +388,8 @@ func (v *astVisitor) Visit(node ast.Node) ast.Visitor {
 		for _, f := range methods.List {
 			if qp := extractQueryParam(v.re, f.Doc.List[0].Text); qp != "" {
 				v.generateInfo.QueryParams[f.Names[0].Name] = f
+			} else if pp := extractPathParam(v.re, f.Doc.List[0].Text); pp != "" {
+				v.generateInfo.PathSubstitutions[f.Names[0].Name] = f
 			} else if asyncTag := extractAsyncTag(v.re, f.Doc.List[0].Text); asyncTag != "" {
 				v.generateInfo.AsyncResponse = f
 				v.generateInfo.CallbackType = asyncTag
@@ -418,6 +452,14 @@ func isAnnotationHttpMethod(s string) bool {
 func extractQueryParam(re *regexp.Regexp, s string) string {
 	match := re.FindStringSubmatch(s)
 	if len(match) == 3 && match[1] == query {
+		return match[2]
+	}
+	return ""
+}
+
+func extractPathParam(re *regexp.Regexp, s string) string {
+	match := re.FindStringSubmatch(s)
+	if len(match) == 3 && match[1] == path {
 		return match[2]
 	}
 	return ""

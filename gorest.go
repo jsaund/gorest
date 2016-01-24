@@ -49,7 +49,7 @@ func main() {
 	if *input != "" {
 		f, err := parser.ParseFile(fileset, *input, nil, parser.ParseComments)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Failed to parse input filename. Is input filename %s valid?", *input)
+			fmt.Fprintf(os.Stderr, "Failed to parse input filename. Is input filename %s valid?\n", *input)
 			os.Exit(1)
 		}
 		file = f
@@ -64,7 +64,7 @@ func main() {
 
 	buf, err := generate(file, *pkg)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to generate REST API implementation. %s", err)
+		fmt.Fprintf(os.Stderr, "Failed to generate REST API implementation. %s\n", err)
 		os.Exit(1)
 	}
 
@@ -558,14 +558,6 @@ func extractHttpMethodTag(re *regexp.Regexp, s string) (string, string) {
 		return method, api
 	}
 	return "", ""
-}
-
-func isAnnotationAsync(s string) bool {
-	return s == async
-}
-
-func isAnnotationSync(s string) bool {
-	return s == sync
 }
 
 func isAnnotationHttpMethod(s string) bool {

@@ -21,10 +21,10 @@ var (
 	output  = flag.String("output", "", "name of output file containing generated API request and response implementation")
 	pkg     = flag.String("pkg", "", "name of output file package (should be the same as input package)")
 	funcMap = template.FuncMap{
-		"ParamsList": getParamsList,
-		"ParamName":  getParamName,
-		"ParamKey":   getParamKey,
-		"MethodName": getMethodName,
+		"ParamsList":      getParamsList,
+		"ParamName":       getParamName,
+		"AnnotationValue": getAnnotationValue,
+		"FunctionName":    getFunctionName,
 	}
 )
 
@@ -136,21 +136,21 @@ func New{{ .RequestType }}(baseUrl string) {{ .RequestType }} {
 
 {{ range $key, $value := .PathSubstitutions }}
 func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.pathSubstitutions["{{ ParamKey $value }}"] = {{ ParamName $value.Type true 0 }}
+	b.pathSubstitutions["{{ AnnotationValue $value }}"] = {{ ParamName $value.Type true 0 }}
 	return b
 }
 {{ end }}
 
 {{ range $key, $value := .QueryParams }}
 func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.queryParams.Add("{{ ParamKey $value }}", {{ ParamName $value.Type true 0 }})
+	b.queryParams.Add("{{ AnnotationValue $value }}", {{ ParamName $value.Type true 0 }})
 	return b
 }
 {{ end }}
 
 {{ range $key, $value := .PostFormParams }}
 func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.postFormParams.Add("{{ ParamKey $value }}", {{ ParamName $value.Type true 0 }})
+	b.postFormParams.Add("{{ AnnotationValue $value }}", {{ ParamName $value.Type true 0 }})
 	return b
 }
 {{ end }}
@@ -164,14 +164,14 @@ func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.
 
 {{ range $key, $value := .HeaderParams }}
 func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.headerParams["{{ ParamKey $value }}"] = {{ ParamName $value.Type true 0 }}
+	b.headerParams["{{ AnnotationValue $value }}"] = {{ ParamName $value.Type true 0 }}
 	return b
 }
 {{ end }}
 
 {{ range $key, $value := .PostMultiPartParams }}
 func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.postMultiPartParams["{{ ParamKey $value }}"] = {{ ParamName $value.Type true 0 }}
+	b.postMultiPartParams["{{ AnnotationValue $value }}"] = {{ ParamName $value.Type true 0 }}
 	return b
 }
 {{ end }}
@@ -245,7 +245,7 @@ func (b *{{ .RequestType }}Impl) build() (req *http.Request, err error) {
 }
 
 {{ if and .ResponseType .SyncResponse }}
-func (b *{{ $.RequestType }}Impl) {{ $.SyncResponse | MethodName }}() ({{ $.ResponseType }}, error) {
+func (b *{{ $.RequestType }}Impl) {{ $.SyncResponse | FunctionName }}() ({{ $.ResponseType }}, error) {
 	request, err := b.build()
 	if err != nil {
 		return nil, err
@@ -267,13 +267,13 @@ func (b *{{ $.RequestType }}Impl) {{ $.SyncResponse | MethodName }}() ({{ $.Resp
 {{ end }}
 
 {{ if and .CallbackType .AsyncResponse }}
-func (b *{{ $.RequestType }}Impl) {{ $.AsyncResponse | MethodName }}({{ ParamsList $.AsyncResponse.Type }}) {
+func (b *{{ $.RequestType }}Impl) {{ $.AsyncResponse | FunctionName }}({{ ParamsList $.AsyncResponse.Type }}) {
 	if {{ ParamName $.AsyncResponse.Type false 0 }} != nil {
 		{{ ParamName $.AsyncResponse.Type false 0 }}.OnStart()
 	}
 
 	go func(b *{{ $.RequestType }}Impl) {
-		response, err := b.{{ $.SyncResponse | MethodName }}()
+		response, err := b.{{ $.SyncResponse | FunctionName }}()
 
 		if {{ ParamName $.AsyncResponse.Type false 0 }} != nil {
 			if err != nil {
@@ -311,16 +311,16 @@ func isInteractive() bool {
 	return fileInfo.Mode()&(os.ModeCharDevice|os.ModeCharDevice) != 0
 }
 
-func getMethodName(f *ast.Field) string {
+func getFunctionName(f *ast.Field) string {
 	return f.Names[0].Name
 }
 
-func getParamKey(f *ast.Field) string {
+func getAnnotationValue(f *ast.Field) string {
 	re := regexp.MustCompile(pattern)
 	comment := f.Doc.Text()
 
 	for annotionType, _ := range annotationTypes {
-		if key, valid := extractParam(re, comment, annotionType); valid {
+		if key, valid := extractAnnotationValue(re, comment, annotionType); valid {
 			return key
 		}
 	}
@@ -539,7 +539,7 @@ func (v *astVisitor) Visit(node ast.Node) ast.Visitor {
 	return v
 }
 
-func extractParam(re *regexp.Regexp, s, paramType string) (string, bool) {
+func extractAnnotationValue(re *regexp.Regexp, s, paramType string) (string, bool) {
 	match := re.FindStringSubmatch(s)
 	if len(match) == 3 && match[1] == paramType {
 		return match[2], true

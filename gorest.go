@@ -97,6 +97,8 @@ func generateRequestResponse(r *generateInfo) ([]byte, error) {
 package {{.Pkg}}
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -111,18 +113,21 @@ type {{ $.CallbackType }} interface {
 {{ end }}
 
 type {{ .RequestType }}Impl struct {
-	baseUrl     string
+	baseUrl           string
 	pathSubstitutions map[string]string
-	queryParams url.Values
-	postFormParams url.Values
+	queryParams       url.Values
+	postFormParams    url.Values
+	postBody          interface{}
+	headerParams      map[string]string
 }
 
 func New{{ .RequestType }}(baseUrl string) {{ .RequestType }} {
 	return &{{ .RequestType }}Impl{
-		baseUrl: baseUrl,
+		baseUrl:           baseUrl,
 		pathSubstitutions: make(map[string]string),
-		queryParams: url.Values{},
-		postFormParams: url.Values{},
+		queryParams:       url.Values{},
+		postFormParams:    url.Values{},
+		headerParams:      make(map[string]string),
 	}
 }
 
@@ -135,14 +140,28 @@ func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.
 
 {{ range $key, $value := .QueryParams }}
 func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.queryParams.Add("{{ $value | ParamKey }}", {{ ParamName $value.Type true 0 }})
+	b.queryParams.Add("{{ ParamKey $value }}", {{ ParamName $value.Type true 0 }})
 	return b
 }
 {{ end }}
 
 {{ range $key, $value := .PostFormParams }}
 func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.postFormParams.Add("{{ $value | ParamKey }}", {{ ParamName $value.Type true 0 }})
+	b.postFormParams.Add("{{ ParamKey $value }}", {{ ParamName $value.Type true 0 }})
+	return b
+}
+{{ end }}
+
+{{ range $key, $value := .PostParams }}
+func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
+	b.postBody = {{ ParamName $value.Type false 0 }}
+	return b
+}
+{{ end }}
+
+{{ range $key, $value := .HeaderParams }}
+func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
+	b.headerParams["{{ ParamKey $value }}"] = {{ ParamName $value.Type true 0 }}
 	return b
 }
 {{ end }}
@@ -160,17 +179,45 @@ func (b *{{ .RequestType }}Impl) applyPathSubstituions(api string) string {
 }
 
 func (b *{{ .RequestType }}Impl) build() (*http.Request, error) {
-	req, err := http.NewRequest("{{ .HttpMethod }}", b.baseUrl + b.applyPathSubstituions("{{ .ApiEndpoint }}"), nil)
-	if err != nil {
-		return nil, err
-	}
-	if len(b.queryParams) > 0 {
-		req.URL.RawQuery = b.queryParams.Encode()
-	}
-	if len(b.postFormParams) > 0 {
-		req.URL.RawQuery = b.postFormParams.Encode()
+	var req *http.Request
+	url := b.baseUrl + b.applyPathSubstituions("{{ .ApiEndpoint }}")
+	httpMethod := "{{ .HttpMethod }}"
+	switch httpMethod {
+	case "POST":
+		if b.postBody != nil {
+			// Assume the body is to be marshalled to JSON
+			contentBody, err := json.Marshal(b.postBody)
+			if err != nil {
+				return nil, err
+			}
+			contentReader := bytes.NewReader(contentBody)
+			req, err = http.NewRequest(httpMethod, url, contentReader)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Content-Type", "application/json")
+		} else if len(b.postFormParams) > 0 {
+			contentForm := b.postFormParams.Encode()
+			contentReader := strings.NewReader(contentForm)
+			req, err := http.NewRequest(httpMethod, url, contentReader)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+	case "GET":
+		req, err := http.NewRequest(httpMethod, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		if len(b.queryParams) > 0 {
+			req.URL.RawQuery = b.queryParams.Encode()
+		}
 	}
 	req.Header.Set("Accept", "application/json")
+	for key, value := range b.headerParams {
+		req.Header.Set(key, value)
+	}
 	return req, nil
 }
 
@@ -321,6 +368,7 @@ func getParamType(e ast.Expr) string {
 const (
 	sync               string = "SYNC"
 	async              string = "ASYNC"
+	header             string = "HEADER"
 	path               string = "PATH"
 	query              string = "QUERY"
 	field              string = "FIELD"
@@ -334,6 +382,17 @@ const (
 	pattern string = `@(\w+)\(\"(.*)\"\)`
 )
 
+type empty struct{}
+
+var httpMethods = map[string]empty{
+	httpMethodDelete:   empty{},
+	httpMethodGet:      empty{},
+	httpMethodHead:     empty{},
+	httpMethodPost:     empty{},
+	httpMethodPostForm: empty{},
+	httpMethodPut:      empty{},
+}
+
 type generateInfo struct {
 	Pkg               string
 	RequestType       string
@@ -342,6 +401,8 @@ type generateInfo struct {
 	PathSubstitutions map[string]*ast.Field
 	QueryParams       map[string]*ast.Field
 	PostFormParams    map[string]*ast.Field
+	PostParams        map[string]*ast.Field
+	HeaderParams      map[string]*ast.Field
 	SyncResponse      *ast.Field
 	AsyncResponse     *ast.Field
 	CallbackType      string
@@ -363,6 +424,8 @@ func newVisitor(info *types.Info, pkg string) *astVisitor {
 			PathSubstitutions: make(map[string]*ast.Field),
 			QueryParams:       make(map[string]*ast.Field),
 			PostFormParams:    make(map[string]*ast.Field),
+			PostParams:        make(map[string]*ast.Field),
+			HeaderParams:      make(map[string]*ast.Field),
 		},
 		re: regexp.MustCompile(pattern),
 	}
@@ -406,18 +469,28 @@ func (v *astVisitor) Visit(node ast.Node) ast.Visitor {
 		ifc := node.(*ast.InterfaceType)
 		methods := ifc.Methods
 		for _, f := range methods.List {
-			if qp := extractQueryParam(v.re, f.Doc.List[0].Text); qp != "" {
-				v.generateInfo.QueryParams[f.Names[0].Name] = f
-			} else if pfp := extractPostFormParam(v.re, f.Doc.List[0].Text); pfp != "" {
+			match := v.re.FindStringSubmatch(f.Doc.List[0].Text)
+			if len(match) != 3 {
+				continue
+			}
+			key := match[1]
+			value := match[2]
+
+			switch key {
+			case field:
 				v.generateInfo.PostFormParams[f.Names[0].Name] = f
-			} else if pp := extractPathParam(v.re, f.Doc.List[0].Text); pp != "" {
+			case header:
+				v.generateInfo.HeaderParams[f.Names[0].Name] = f
+			case path:
 				v.generateInfo.PathSubstitutions[f.Names[0].Name] = f
-			} else if asyncTag := extractAsyncTag(v.re, f.Doc.List[0].Text); asyncTag != "" {
-				v.generateInfo.AsyncResponse = f
-				v.generateInfo.CallbackType = asyncTag
-			} else if syncTag := extractSyncTag(v.re, f.Doc.List[0].Text); syncTag != "" {
+			case query:
+				v.generateInfo.QueryParams[f.Names[0].Name] = f
+			case sync:
 				v.generateInfo.SyncResponse = f
-				v.generateInfo.ResponseType = syncTag
+				v.generateInfo.ResponseType = value
+			case async:
+				v.generateInfo.AsyncResponse = f
+				v.generateInfo.CallbackType = value
 			}
 		}
 		break
@@ -473,7 +546,8 @@ func isAnnotationSync(s string) bool {
 }
 
 func isAnnotationHttpMethod(s string) bool {
-	return s == httpMethodGet || s == httpMethodPost || s == httpMethodPostForm || s == httpMethodPut || s == httpMethodHead || s == httpMethodDelete
+	_, ok := httpMethods[s]
+	return ok
 }
 
 func extractQueryParam(re *regexp.Regexp, s string) string {
@@ -495,6 +569,14 @@ func extractPostFormParam(re *regexp.Regexp, s string) string {
 func extractPathParam(re *regexp.Regexp, s string) string {
 	match := re.FindStringSubmatch(s)
 	if len(match) == 3 && match[1] == path {
+		return match[2]
+	}
+	return ""
+}
+
+func extractHeaderParam(re *regexp.Regexp, s string) string {
+	match := re.FindStringSubmatch(s)
+	if len(match) == 3 && match[1] == header {
 		return match[2]
 	}
 	return ""

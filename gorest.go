@@ -62,7 +62,8 @@ func main() {
 		file = f
 	}
 
-	buf, err := generate(file, *pkg)
+	info := getInfo(file, *pkg)
+	buf, err := generateRequestResponse(info)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to generate REST API implementation. %s\n", err)
 		os.Exit(1)
@@ -75,7 +76,9 @@ func main() {
 	fmt.Println("Generated source written to file " + *output)
 }
 
-func generate(file *ast.File, pkg string) ([]byte, error) {
+// getInfo walks the AST represented by the interface we wish to generate an implementation for.
+// Returns generateInfo which contains request and response implementation details.
+func getInfo(file *ast.File, pkg string) *generateInfo {
 	info := &types.Info{
 		Types: make(map[ast.Expr]types.TypeAndValue),
 		Defs:  make(map[*ast.Ident]types.Object),
@@ -84,10 +87,10 @@ func generate(file *ast.File, pkg string) ([]byte, error) {
 
 	visitor := newVisitor(info, pkg)
 	ast.Walk(visitor, file)
-
-	return generateRequestResponse(visitor.generateInfo)
+	return visitor.generateInfo
 }
 
+// generateRequestResponse generates the implementation using the details contained in genereateInfo.
 func generateRequestResponse(r *generateInfo) ([]byte, error) {
 	var builderTemplate = template.Must(template.New("builder").Funcs(funcMap).Parse(`/*
 * CODE GENERATED AUTOMATICALLY WITH GOREST (github.com/jsaund/gorest)
@@ -303,7 +306,7 @@ func (b *{{ $.RequestType }}Impl) {{ $.AsyncResponse | FunctionName }}({{ Params
 	return formatted, nil
 }
 
-// Return true if os.Stdin appears to be interactive
+// isInteractive will return true if os.Stdin appears to be interactive
 func isInteractive() bool {
 	fileInfo, err := os.Stdin.Stat()
 	if err != nil {
@@ -312,10 +315,12 @@ func isInteractive() bool {
 	return fileInfo.Mode()&(os.ModeCharDevice|os.ModeCharDevice) != 0
 }
 
+// getFunctionName returns the name of the function
 func getFunctionName(f *ast.Field) string {
 	return f.Names[0].Name
 }
 
+// getAnnotationValue returns the value represented by the annotation in the field's comment
 func getAnnotationValue(f *ast.Field) string {
 	re := regexp.MustCompile(pattern)
 	comment := f.Doc.Text()
@@ -330,6 +335,7 @@ func getAnnotationValue(f *ast.Field) string {
 	return ""
 }
 
+// getParamName returns the name of the parameter in the field's argument list
 func getParamName(e ast.Expr, forceString bool, index int) string {
 	function, ok := e.(*ast.FuncType)
 	if !ok {
@@ -355,6 +361,8 @@ func getParamName(e ast.Expr, forceString bool, index int) string {
 	return paramName
 }
 
+// getParamsList returns a comma separated list of parameter name, parameter type pairs
+// Example: size int8, name string, lat float64
 func getParamsList(e ast.Expr) string {
 	p := e.(*ast.FuncType).Params
 	var s string
@@ -368,6 +376,7 @@ func getParamsList(e ast.Expr) string {
 	return s
 }
 
+// getParamType will return the parameter type
 func getParamType(e ast.Expr) string {
 	switch v := e.(type) {
 	case *ast.Ident:
@@ -397,6 +406,9 @@ const (
 	httpMethodDelete   string = "DELETE"
 	httpMethodHead     string = "HEAD"
 
+	// pattern represents the annotation regex pattern
+	// A valid annotation example is: @GET("/photos/{id}/comments"), where we return
+	// ['GET("/photos/{id}/comments")', 'GET', '/photos/{id}/comments']
 	pattern string = `@(\w+)\(\"(.*)\"\)`
 )
 

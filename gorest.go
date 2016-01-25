@@ -99,6 +99,7 @@ package {{.Pkg}}
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -346,9 +347,10 @@ func getParamName(e ast.Expr, forceString bool, index int) string {
 		return ""
 	}
 
-	paramName := p.List[index].Names[0].Name
+	param := p.List[index]
+	paramName := param.Names[0].Name
 	if forceString {
-		paramName = fmt.Sprintf("string(%s)", paramName)
+		paramName = "fmt.Sprintf(\"%v\"," + paramName + ")"
 	}
 	return paramName
 }

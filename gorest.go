@@ -8,12 +8,12 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
-	"go/types"
 	"io/ioutil"
 	"log"
 	"os"
-	"regexp"
 	"text/template"
+
+	"github.com/jsaund/gorest/parse"
 )
 
 var (
@@ -78,26 +78,19 @@ func main() {
 
 // getInfo walks the AST represented by the interface we wish to generate an implementation for.
 // Returns generateInfo which contains request and response implementation details.
-func getInfo(file *ast.File, pkg string) *generateInfo {
-	info := &types.Info{
-		Types: make(map[ast.Expr]types.TypeAndValue),
-		Defs:  make(map[*ast.Ident]types.Object),
-		Uses:  make(map[*ast.Ident]types.Object),
-	}
-
-	visitor := newVisitor(info, pkg)
-	ast.Walk(visitor, file)
-	return visitor.generateInfo
+func getInfo(file *ast.File, pkg string) *parse.ParseResult {
+	parser := parse.NewParser(file, pkg)
+	return parser.Parse()
 }
 
 // generateRequestResponse generates the implementation using the details contained in genereateInfo.
-func generateRequestResponse(r *generateInfo) ([]byte, error) {
+func generateRequestResponse(r *parse.ParseResult) ([]byte, error) {
 	var builderTemplate = template.Must(template.New("builder").Funcs(funcMap).Parse(`/*
 * CODE GENERATED AUTOMATICALLY WITH GOREST (github.com/jsaund/gorest)
 * THIS FILE SHOULD NOT BE EDITED BY HAND
 */
 
-package {{.Pkg}}
+package {{.PackageName}}
 
 import (
 	"bytes"
@@ -339,15 +332,10 @@ func getFunctionName(f *ast.Field) string {
 
 // getAnnotationValue returns the value represented by the annotation in the field's comment
 func getAnnotationValue(f *ast.Field) string {
-	re := regexp.MustCompile(pattern)
 	comment := f.Doc.Text()
-
-	for annotionType, _ := range annotationTypes {
-		if key, valid := extractAnnotationValue(re, comment, annotionType); valid {
-			return key
-		}
+	if annotation, valid := parse.ExtractRequestAnnotation(comment); valid {
+		return annotation.Value
 	}
-
 	log.Fatalf("Must have query or path or field parameter defined.")
 	return ""
 }
@@ -406,192 +394,4 @@ func getParamType(e ast.Expr) string {
 		log.Fatalf("Unrecognized expression type: %v", e)
 		return ""
 	}
-}
-
-const (
-	sync               string = "SYNC"
-	async              string = "ASYNC"
-	header             string = "HEADER"
-	path               string = "PATH"
-	query              string = "QUERY"
-	field              string = "FIELD"
-	part               string = "PART"
-	httpMethodGet      string = "GET"
-	httpMethodPost     string = "POST"
-	httpMethodPostForm string = "POST_FORM"
-	httpMethodPut      string = "PUT"
-	httpMethodDelete   string = "DELETE"
-	httpMethodHead     string = "HEAD"
-
-	// pattern represents the annotation regex pattern
-	// A valid annotation example is: @GET("/photos/{id}/comments"), where we return
-	// ['GET("/photos/{id}/comments")', 'GET', '/photos/{id}/comments']
-	pattern string = `@(\w+)\(\"(.*)\"\)`
-)
-
-type empty struct{}
-
-var annotationTypes = map[string]empty{
-	field:  empty{},
-	header: empty{},
-	part:   empty{},
-	path:   empty{},
-	query:  empty{},
-	sync:   empty{},
-	async:  empty{},
-}
-
-var httpMethods = map[string]empty{
-	httpMethodDelete:   empty{},
-	httpMethodGet:      empty{},
-	httpMethodHead:     empty{},
-	httpMethodPost:     empty{},
-	httpMethodPostForm: empty{},
-	httpMethodPut:      empty{},
-}
-
-type generateInfo struct {
-	Pkg                 string
-	RequestType         string
-	ApiEndpoint         string
-	HttpMethod          string
-	PathSubstitutions   map[string]*ast.Field
-	QueryParams         map[string]*ast.Field
-	PostFormParams      map[string]*ast.Field
-	PostMultiPartParams map[string]*ast.Field
-	PostParams          map[string]*ast.Field
-	HeaderParams        map[string]*ast.Field
-	SyncResponse        *ast.Field
-	AsyncResponse       *ast.Field
-	CallbackType        string
-	ResponseType        string
-}
-
-type astVisitor struct {
-	info         *types.Info
-	generateInfo *generateInfo
-	re           *regexp.Regexp
-	buildRequest bool
-}
-
-func newVisitor(info *types.Info, pkg string) *astVisitor {
-	return &astVisitor{
-		info: info,
-		generateInfo: &generateInfo{
-			Pkg:                 pkg,
-			PathSubstitutions:   make(map[string]*ast.Field),
-			QueryParams:         make(map[string]*ast.Field),
-			PostFormParams:      make(map[string]*ast.Field),
-			PostMultiPartParams: make(map[string]*ast.Field),
-			PostParams:          make(map[string]*ast.Field),
-			HeaderParams:        make(map[string]*ast.Field),
-		},
-		re: regexp.MustCompile(pattern),
-	}
-}
-
-func (v *astVisitor) Visit(node ast.Node) ast.Visitor {
-	if node == nil {
-		return v
-	}
-
-	switch node.(type) {
-	case *ast.File:
-		// At the start of a file
-		// Reset builder flags
-		v.buildRequest = false
-		break
-	case *ast.TypeSpec:
-		// Check if we are at the beginning of a request builder declaration
-		// or a response / callback declaration
-		// This must be an interface
-		typeSpec := node.(*ast.TypeSpec)
-		switch typeSpec.Type.(type) {
-		case *ast.InterfaceType:
-			if v.buildRequest {
-				v.generateInfo.RequestType = typeSpec.Name.Name
-			} else {
-				v.buildRequest = false
-			}
-			break
-		}
-		break
-	case *ast.InterfaceType:
-		if !v.buildRequest {
-			// Only interested in parsing methods of the Requeset interface
-			// Ignore all other types
-			break
-		}
-		// Retain a mapping of interface methods to their fields which contain
-		// the query parameter and argument name and type information to implement
-		// the interface
-		ifc := node.(*ast.InterfaceType)
-		methods := ifc.Methods
-		for _, f := range methods.List {
-			match := v.re.FindStringSubmatch(f.Doc.List[0].Text)
-			if len(match) != 3 {
-				continue
-			}
-			key := match[1]
-			value := match[2]
-			param := f.Names[0].Name
-
-			switch key {
-			case field:
-				v.generateInfo.PostFormParams[param] = f
-			case header:
-				v.generateInfo.HeaderParams[param] = f
-			case part:
-				v.generateInfo.PostMultiPartParams[param] = f
-			case path:
-				v.generateInfo.PathSubstitutions[param] = f
-			case query:
-				v.generateInfo.QueryParams[param] = f
-			case sync:
-				v.generateInfo.SyncResponse = f
-				v.generateInfo.ResponseType = value
-			case async:
-				v.generateInfo.AsyncResponse = f
-				v.generateInfo.CallbackType = value
-			}
-		}
-		break
-	case *ast.Comment:
-		comment := node.(*ast.Comment)
-		if httpMethod, api := extractHttpMethodTag(v.re, comment.Text); httpMethod != "" {
-			// Extract the HTTP Method and API from the Interface declaration
-			v.buildRequest = true
-			v.generateInfo.HttpMethod = httpMethod
-			v.generateInfo.ApiEndpoint = api
-		}
-		break
-	}
-
-	return v
-}
-
-func extractAnnotationValue(re *regexp.Regexp, s, paramType string) (string, bool) {
-	match := re.FindStringSubmatch(s)
-	if len(match) == 3 && match[1] == paramType {
-		return match[2], true
-	}
-	return "", false
-}
-
-func extractHttpMethodTag(re *regexp.Regexp, s string) (string, string) {
-	match := re.FindStringSubmatch(s)
-	if len(match) == 3 && isAnnotationHttpMethod(match[1]) {
-		method := match[1]
-		api := match[2]
-		if method == httpMethodPostForm {
-			method = httpMethodPost
-		}
-		return method, api
-	}
-	return "", ""
-}
-
-func isAnnotationHttpMethod(s string) bool {
-	_, ok := httpMethods[s]
-	return ok
 }

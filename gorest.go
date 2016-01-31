@@ -107,6 +107,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/jsaund/gorest/restclient"
 )
 
 {{ if .CallbackType }}
@@ -118,7 +120,6 @@ type {{ $.CallbackType }} interface {
 {{ end }}
 
 type {{ .RequestType }}Impl struct {
-	baseUrl            string
 	pathSubstitutions  map[string]string
 	queryParams        url.Values
 	postFormParams     url.Values
@@ -127,9 +128,8 @@ type {{ .RequestType }}Impl struct {
 	headerParams       map[string]string
 }
 
-func New{{ .RequestType }}(baseUrl string) {{ .RequestType }} {
+func New{{ .RequestType }}() {{ .RequestType }} {
 	return &{{ .RequestType }}Impl{
-		baseUrl:            baseUrl,
 		pathSubstitutions:  make(map[string]string),
 		queryParams:        url.Values{},
 		postFormParams:     url.Values{},
@@ -193,7 +193,11 @@ func (b *{{ .RequestType }}Impl) applyPathSubstituions(api string) string {
 }
 
 func (b *{{ .RequestType }}Impl) build() (req *http.Request, err error) {
-	url := b.baseUrl + b.applyPathSubstituions("{{ .ApiEndpoint }}")
+	restClient := restclient.GetClient()
+	if restClient == nil {
+		return nil, fmt.Errorf("A rest client has not been registered yet. You must call client.RegisterClient first")
+	}
+	url := restClient.BaseURL() + b.applyPathSubstituions("{{ .ApiEndpoint }}")
 	httpMethod := "{{ .HttpMethod }}"
 	switch httpMethod {
 	case "POST", "PUT":
@@ -256,12 +260,25 @@ func (b *{{ $.RequestType }}Impl) {{ $.SyncResponse | FunctionName }}() ({{ $.Re
 	}
 	request.URL.RawQuery = request.URL.Query().Encode()
 
-	response, err := getClient().Do(request)
+	restClient := restclient.GetClient()
+	if restClient == nil {
+		return nil, fmt.Errorf("A rest client has not been registered yet. You must call client.RegisterClient first")
+	}
+
+	if restClient.Debug() {
+		restclient.DebugRequest(request)
+	}
+
+	response, err := restClient.HttpClient().Do(request)
 	if err != nil {
 		return nil, err
 	}
 
 	defer response.Body.Close()
+	if restClient.Debug() {
+		restclient.DebugResponse(response)
+	}
+
 	result, err := New{{ $.ResponseType }}(response.Body)
 	if err != nil {
 		return nil, err

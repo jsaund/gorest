@@ -1,31 +1,23 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"go/ast"
-	"go/format"
 	"go/parser"
 	"go/token"
 	"io/ioutil"
 	"log"
 	"os"
-	"text/template"
 
+	"github.com/jsaund/gorest/generate"
 	"github.com/jsaund/gorest/parse"
 )
 
 var (
-	input   = flag.String("input", "", "name of input file containing REST API to generate (if absent then Stdin is used)")
-	output  = flag.String("output", "", "name of output file containing generated API request and response implementation")
-	pkg     = flag.String("pkg", "", "name of output file package (should be the same as input package)")
-	funcMap = template.FuncMap{
-		"ParamsList":      getParamsList,
-		"ParamName":       getParamName,
-		"AnnotationValue": getAnnotationValue,
-		"FunctionName":    getFunctionName,
-	}
+	input  = flag.String("input", "", "name of input file containing REST API to generate (if absent then Stdin is used)")
+	output = flag.String("output", "", "name of output file containing generated API request and response implementation")
+	pkg    = flag.String("pkg", "", "name of output file package (should be the same as input package)")
 )
 
 func main() {
@@ -62,336 +54,33 @@ func main() {
 		file = f
 	}
 
-	info := getInfo(file, *pkg)
-	buf, err := generateRequestResponse(info)
+	parseResult := parseAST(file, *pkg)
+	buf, err := generateBuilder(parseResult)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to generate REST API implementation. %s\n", err)
 		os.Exit(1)
 	}
 
-	if err := ioutil.WriteFile(*output, buf, 0644); err != nil {
+	if err := writeFile(*output, buf); err != nil {
 		log.Fatalf("Failed to write generated source to file %s. Reason: %s", *output, err)
 	}
 
 	fmt.Println("Generated source written to file " + *output)
 }
 
-// getInfo walks the AST represented by the interface we wish to generate an implementation for.
-// Returns generateInfo which contains request and response implementation details.
-func getInfo(file *ast.File, pkg string) *parse.ParseResult {
+// parseAST walks the AST represented by the interface we wish to generate an implementation for.
+// Returns ParseResult which contains request and response implementation details.
+func parseAST(file *ast.File, pkg string) *parse.ParseResult {
 	parser := parse.NewParser(file, pkg)
 	return parser.Parse()
 }
 
-// generateRequestResponse generates the implementation using the details contained in genereateInfo.
-func generateRequestResponse(r *parse.ParseResult) ([]byte, error) {
-	var builderTemplate = template.Must(template.New("builder").Funcs(funcMap).Parse(`/*
-* CODE GENERATED AUTOMATICALLY WITH GOREST (github.com/jsaund/gorest)
-* THIS FILE SHOULD NOT BE EDITED BY HAND
-*/
-
-package {{.PackageName}}
-
-import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"mime/multipart"
-	"net/http"
-	"net/url"
-	"strings"
-
-	"github.com/jsaund/gorest/restclient"
-)
-
-{{ if .CallbackType }}
-type {{ $.CallbackType }} interface {
-	OnStart()
-	OnError(reason string)
-	OnSuccess(response {{ $.ResponseType }})
-}
-{{ end }}
-
-type {{ .RequestType }}Impl struct {
-	pathSubstitutions  map[string]string
-	queryParams        url.Values
-	postFormParams     url.Values
-	postBody           interface{}
-	postMultiPartParam map[string][]byte
-	headerParams       map[string]string
+// generateBuilder transforms the parsed information in to a request builder and response golang file.
+func generateBuilder(r *parse.ParseResult) ([]byte, error) {
+	return generate.Generate(r)
 }
 
-func New{{ .RequestType }}() {{ .RequestType }} {
-	return &{{ .RequestType }}Impl{
-		pathSubstitutions:  make(map[string]string),
-		queryParams:        url.Values{},
-		postFormParams:     url.Values{},
-		postMultiPartParam: make(map[string][]byte),
-		headerParams:       make(map[string]string),
-	}
-}
-
-{{ range $key, $value := .PathSubstitutions }}
-func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.pathSubstitutions["{{ AnnotationValue $value }}"] = {{ ParamName $value.Type true 0 }}
-	return b
-}
-{{ end }}
-
-{{ range $key, $value := .QueryParams }}
-func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.queryParams.Add("{{ AnnotationValue $value }}", {{ ParamName $value.Type true 0 }})
-	return b
-}
-{{ end }}
-
-{{ range $key, $value := .PostFormParams }}
-func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.postFormParams.Add("{{ AnnotationValue $value }}", {{ ParamName $value.Type true 0 }})
-	return b
-}
-{{ end }}
-
-{{ range $key, $value := .PostParams }}
-func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.postBody = {{ ParamName $value.Type false 0 }}
-	return b
-}
-{{ end }}
-
-{{ range $key, $value := .HeaderParams }}
-func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.headerParams["{{ AnnotationValue $value }}"] = {{ ParamName $value.Type true 0 }}
-	return b
-}
-{{ end }}
-
-{{ range $key, $value := .PostMultiPartParams }}
-func (b *{{ $.RequestType }}Impl) {{ $key }}({{ ParamsList $value.Type }}) {{ $.RequestType }} {
-	b.postMultiPartParams["{{ AnnotationValue $value }}"] = {{ ParamName $value.Type true 0 }}
-	return b
-}
-{{ end }}
-
-func (b *{{ .RequestType }}Impl) applyPathSubstituions(api string) string {
-	if len(b.pathSubstitutions) == 0 {
-		return api
-	}
-
-	for key, value := range b.pathSubstitutions {
-		api = strings.Replace(api, "{" + key + "}", value, -1)
-	}
-
-	return api
-}
-
-func (b *{{ .RequestType }}Impl) build() (req *http.Request, err error) {
-	restClient := restclient.GetClient()
-	if restClient == nil {
-		return nil, fmt.Errorf("A rest client has not been registered yet. You must call client.RegisterClient first")
-	}
-	url := restClient.BaseURL() + b.applyPathSubstituions("{{ .ApiEndpoint }}")
-	httpMethod := "{{ .HttpMethod }}"
-	switch httpMethod {
-	case "POST", "PUT":
-		if b.postBody != nil {
-			// Assume the body is to be marshalled to JSON
-			contentBody, err := json.Marshal(b.postBody)
-			if err != nil {
-				return nil, err
-			}
-			contentReader := bytes.NewReader(contentBody)
-			req, err = http.NewRequest(httpMethod, url, contentReader)
-			if err != nil {
-				return nil, err
-			}
-			req.Header.Set("Content-Type", "application/json")
-		} else if len(b.postFormParams) > 0 {
-			contentForm := b.postFormParams.Encode()
-			contentReader := strings.NewReader(contentForm)
-			if req, err = http.NewRequest(httpMethod, url, contentReader); err != nil {
-				return nil, err
-			}
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		} else if len(b.postMultiPartParam) > 0 {
-			contentBody := &bytes.Buffer{}
-			writer := multipart.NewWriter(contentBody)
-			for key, value := range b.postMultiPartParam {
-				if err := writer.WriteField(key, string(value)); err != nil {
-					return nil, err
-				}
-			}
-			if err = writer.Close(); err != nil {
-				return nil, err
-			}
-			if req, err = http.NewRequest(httpMethod, url, contentBody); err != nil {
-				return nil, err
-			}
-			req.Header.Set("Content-Type", "multipart/form-data")
-		}
-	case "GET", "DELETE":
-		req, err = http.NewRequest(httpMethod, url, nil)
-		if err != nil {
-			return nil, err
-		}
-		if len(b.queryParams) > 0 {
-			req.URL.RawQuery = b.queryParams.Encode()
-		}
-	}
-	req.Header.Set("Accept", "application/json")
-	for key, value := range b.headerParams {
-		req.Header.Set(key, value)
-	}
-	return req, nil
-}
-
-{{ if and .ResponseType .SyncResponse }}
-func (b *{{ $.RequestType }}Impl) {{ $.SyncResponse | FunctionName }}() ({{ $.ResponseType }}, error) {
-	request, err := b.build()
-	if err != nil {
-		return nil, err
-	}
-	request.URL.RawQuery = request.URL.Query().Encode()
-
-	restClient := restclient.GetClient()
-	if restClient == nil {
-		return nil, fmt.Errorf("A rest client has not been registered yet. You must call client.RegisterClient first")
-	}
-
-	if restClient.Debug() {
-		restclient.DebugRequest(request)
-	}
-
-	response, err := restClient.HttpClient().Do(request)
-	if err != nil {
-		return nil, err
-	}
-
-	defer response.Body.Close()
-	if restClient.Debug() {
-		restclient.DebugResponse(response)
-	}
-
-	result, err := New{{ $.ResponseType }}(response.Body)
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-{{ end }}
-
-{{ if and .CallbackType .AsyncResponse }}
-func (b *{{ $.RequestType }}Impl) {{ $.AsyncResponse | FunctionName }}({{ ParamsList $.AsyncResponse.Type }}) {
-	if {{ ParamName $.AsyncResponse.Type false 0 }} != nil {
-		{{ ParamName $.AsyncResponse.Type false 0 }}.OnStart()
-	}
-
-	go func(b *{{ $.RequestType }}Impl) {
-		response, err := b.{{ $.SyncResponse | FunctionName }}()
-
-		if {{ ParamName $.AsyncResponse.Type false 0 }} != nil {
-			if err != nil {
-				{{ ParamName $.AsyncResponse.Type false 0 }}.OnError(err.Error())
-			} else {
-				{{ ParamName $.AsyncResponse.Type false 0 }}.OnSuccess(response)
-			}
-		}
-	}(b)
-}
-{{ end }}
-`))
-	var buf bytes.Buffer
-	err := builderTemplate.Execute(&buf, r)
-	if err != nil {
-		log.Fatalf("Failed to generate template: %v", err)
-		return nil, err
-	}
-
-	formatted, err := format.Source(buf.Bytes())
-	if err != nil {
-		log.Fatalf("Failed to generate template: %v", err)
-		return nil, err
-	}
-
-	return formatted, nil
-}
-
-// isInteractive will return true if os.Stdin appears to be interactive
-func isInteractive() bool {
-	fileInfo, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fileInfo.Mode()&(os.ModeCharDevice|os.ModeCharDevice) != 0
-}
-
-// getFunctionName returns the name of the function
-func getFunctionName(f *ast.Field) string {
-	return f.Names[0].Name
-}
-
-// getAnnotationValue returns the value represented by the annotation in the field's comment
-func getAnnotationValue(f *ast.Field) string {
-	comment := f.Doc.Text()
-	if annotation, valid := parse.ExtractRequestAnnotation(comment); valid {
-		return annotation.Value
-	}
-	log.Fatalf("Must have query or path or field parameter defined.")
-	return ""
-}
-
-// getParamName returns the name of the parameter in the field's argument list
-func getParamName(e ast.Expr, forceString bool, index int) string {
-	function, ok := e.(*ast.FuncType)
-	if !ok {
-		log.Fatalf("Expression must be function type")
-		return ""
-	}
-	p := function.Params
-	if len(p.List) == 0 {
-		log.Fatalf("Function does not have any parameters")
-		return ""
-	}
-
-	if index >= len(p.List) {
-		log.Fatalf("Illegal parameter index %d. Number of parameters for function is %d", index, len(p.List))
-		return ""
-	}
-
-	param := p.List[index]
-	paramName := param.Names[0].Name
-	if forceString {
-		paramName = "fmt.Sprintf(\"%v\"," + paramName + ")"
-	}
-	return paramName
-}
-
-// getParamsList returns a comma separated list of parameter name, parameter type pairs
-// Example: size int8, name string, lat float64
-func getParamsList(e ast.Expr) string {
-	p := e.(*ast.FuncType).Params
-	var s string
-	for i := 0; i < len(p.List); i++ {
-		f := p.List[i]
-		s += fmt.Sprintf("%s %s", f.Names[0].Name, getParamType(f.Type))
-		if i != len(p.List)-1 {
-			s += ","
-		}
-	}
-	return s
-}
-
-// getParamType will return the parameter type
-func getParamType(e ast.Expr) string {
-	switch v := e.(type) {
-	case *ast.Ident:
-		return v.Name
-	case *ast.StarExpr:
-		return "*" + getParamType(v.X)
-	case *ast.SelectorExpr:
-		return getParamType(v.X) + "." + getParamType(v.Sel)
-	default:
-		log.Fatalf("Unrecognized expression type: %v", e)
-		return ""
-	}
+// writeFile persists the data to the specified file
+func writeFile(filename string, data []byte) error {
+	return ioutil.WriteFile(filename, data, 0644)
 }

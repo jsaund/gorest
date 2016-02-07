@@ -132,8 +132,6 @@ func (p *Parser) Visit(node ast.Node) ast.Visitor {
 		case *ast.InterfaceType:
 			if p.buildRequest {
 				p.result.RequestType = typeSpec.Name.Name
-			} else {
-				p.buildRequest = false
 			}
 			break
 		}

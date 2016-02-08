@@ -260,3 +260,41 @@ func TestGetParamsList(t *testing.T) {
 		assert.Equal(t, tc.output, paramList)
 	}
 }
+
+func TestParamType(t *testing.T) {
+	var testCases = []struct {
+		input  string
+		output string
+	}{
+		{
+			`package main
+			func one(a string) {
+			}
+			`,
+			"string",
+		},
+		{
+			`package main
+			func two(b *Pointer) {
+			}
+			`,
+			"*Pointer",
+		},
+		{
+			`package main
+			func three(b *some.Pointer) {
+			}
+			`,
+			"*some.Pointer",
+		},
+	}
+
+	for _, tc := range testCases {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, "input.go", tc.input, 0)
+		assert.NoError(t, err)
+		params := f.Decls[0].(*ast.FuncDecl).Type.Params
+		paramType := getParamType(params.List[0].Type)
+		assert.Equal(t, tc.output, paramType)
+	}
+}

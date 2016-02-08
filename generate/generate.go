@@ -267,12 +267,7 @@ func getAnnotationValue(f *ast.Field) string {
 }
 
 // getParamName returns the name of the parameter in the field's argument list
-func getParamName(e ast.Expr, forceString bool, index int) string {
-	function, ok := e.(*ast.FuncType)
-	if !ok {
-		log.Fatalf("Expression must be function type")
-		return ""
-	}
+func getParamName(function *ast.FuncType, forceString bool, index int) string {
 	p := function.Params
 	if len(p.List) == 0 {
 		log.Fatalf("Function does not have any parameters")
@@ -294,8 +289,8 @@ func getParamName(e ast.Expr, forceString bool, index int) string {
 
 // getParamsList returns a comma separated list of parameter name, parameter type pairs
 // Example: size int8, name string, lat float64
-func getParamsList(e ast.Expr) string {
-	p := e.(*ast.FuncType).Params
+func getParamsList(function *ast.FuncType) string {
+	p := function.Params
 	var s string
 	for i := 0; i < len(p.List); i++ {
 		f := p.List[i]

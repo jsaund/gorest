@@ -1,6 +1,7 @@
 package generate
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"testing"
@@ -214,4 +215,48 @@ func (b *GetPhotoDetailsRequestBuilderImpl) RunAsync(callback GetPhotoDetailsCal
 	assert.NoError(t, err)
 
 	assert.Equal(t, output, string(data))
+}
+
+func TestGetParamsList(t *testing.T) {
+	var testCases = []struct {
+		input  string
+		output string
+	}{
+		{
+			`package main
+			func empty() {
+			}
+			`,
+			"",
+		},
+		{
+			`package main
+			func oneArgument(arg string) {
+			}
+			`,
+			"arg string",
+		},
+		{
+			`package main
+			func secondArgument(arg1 string, arg2 int) {
+			}
+			`,
+			"arg1 string,arg2 int",
+		},
+		{
+			`package main
+			func multipleArguments(arg1 string, arg2 int, arg3 bool, arg4 string) {
+			}
+			`,
+			"arg1 string,arg2 int,arg3 bool,arg4 string",
+		},
+	}
+
+	for _, tc := range testCases {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, "input.go", tc.input, 0)
+		assert.NoError(t, err)
+		paramList := getParamsList(f.Decls[0].(*ast.FuncDecl).Type)
+		assert.Equal(t, tc.output, paramList)
+	}
 }

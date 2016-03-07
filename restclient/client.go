@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	requestTag  = ">>>>>>>>>>>>>>>>>>>> REQUEST"
-	responseTag = "<<<<<<<<<<<<<<<<<<<< RESPONSE"
+	requestTag  = "----------------->>> [ REQUEST ]"
+	responseTag = "<<<----------------- [ RESPONSE ]"
 )
 
 // Client provides the RequestBuilder with a configured http.Client object. In addition to a

@@ -207,11 +207,7 @@ func (b *{{ $.RequestType }}Impl) {{ $.SyncResponse | FunctionName }}() ({{ $.Re
 		restclient.DebugResponse(response)
 	}
 
-	result, err := New{{ $.ResponseType }}(response.Body)
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
+	return New{{ $.ResponseType }}(response.Body)
 }
 {{ end }}
 

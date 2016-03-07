@@ -179,11 +179,7 @@ func (b *GetPhotoDetailsRequestBuilderImpl) Run() (GetPhotoDetailsResponse, erro
 		restclient.DebugResponse(response)
 	}
 
-	result, err := NewGetPhotoDetailsResponse(response.Body)
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
+	return NewGetPhotoDetailsResponse(response.Body)
 }
 
 func (b *GetPhotoDetailsRequestBuilderImpl) RunAsync(callback GetPhotoDetailsCallback) {
